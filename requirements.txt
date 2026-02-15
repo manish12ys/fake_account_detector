@@ -1,0 +1,13 @@
+beautifulsoup4
+imagehash
+instagrapi
+instaloader
+joblib
+numpy
+pandas
+pillow
+requests
+scikit-learn
+selenium
+streamlit
+webdriver-manager
