@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import uuid
 from pathlib import Path
 
@@ -11,23 +10,6 @@ from utils.features import extract_features
 from utils.image_check import check_image_originality
 from utils.instagram_fetch import fetch_instagram_profile
 from utils.verdict import compute_verdict
-
-
-@st.cache_resource
-def ensure_playwright_browsers():
-    """Ensure Playwright browsers are installed before first use."""
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            pass
-    except Exception as e:
-        if "Executable doesn't exist" in str(e) or "playwright install" in str(e):
-            try:
-                subprocess.run(["playwright", "install", "--with-deps", "chromium"], check=True)
-            except Exception as install_err:
-                st.error(f"Failed to auto-install Playwright: {install_err}")
-        else:
-            raise
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -76,8 +58,6 @@ def init_state() -> None:
 
 st.set_page_config(page_title="Fake Account Detector", page_icon=":mag:", layout="wide")
 init_state()
-
-ensure_playwright_browsers()
 
 st.title("Fake Account Detector")
 st.caption("Minimal Streamlit UI for authenticity analysis.")

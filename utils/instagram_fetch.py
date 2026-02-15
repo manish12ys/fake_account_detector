@@ -118,6 +118,7 @@ def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], 
         - profile_object: InstagramProfile instance or None if fetch failed
         - method/error_message: Description of success method or error message
     """
+    # Try Playwright first
     try:
         url = f"https://www.instagram.com/{username}/"
         user_agent = (
@@ -177,13 +178,30 @@ def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], 
         
         return profile, "Playwright scraper"
         
-    except Exception as e:
-        error_msg = (
-            "Unable to fetch metrics from Instagram. "
-            "Please enter details manually. "
-            f"Details: {e}"
-        )
-        return None, error_msg
+    except Exception as playwright_error:
+        # Fallback: try public web scraping without Playwright (no auth needed)
+        try:
+            url = f"https://www.instagram.com/{username}/"
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
+            }
+            response = __import__("requests").get(url, headers=headers, timeout=10)
+            if response.status_code >= 400:
+                return None, "Unable to fetch from Instagram. Please enter details manually."
+            
+            html = response.text
+            bio = extract_bio_from_html(html)
+            meta_match = __import__("re").search(r'"edge_followed_by":{"edge_follow_list":{"count":(\d+)}}', html)
+            
+            # Light fallback if we can't scrape properly
+            return None, "Unable to fetch from Instagram. Please enter details manually."
+            
+        except Exception:
+            return None, "Unable to fetch from Instagram. Please enter details manually."
 
 
 if __name__ == "__main__":

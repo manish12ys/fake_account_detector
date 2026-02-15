@@ -1,3 +1,10 @@
 #!/bin/bash
 set -e
-playwright install --with-deps chromium
+
+# Ensure cache directory exists with proper permissions
+export HOME="/home/appuser"
+mkdir -p "$HOME/.cache/ms-playwright"
+
+# Install Playwright browsers with all system dependencies
+python -m playwright install --with-deps chromium
+

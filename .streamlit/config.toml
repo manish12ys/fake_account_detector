@@ -1,0 +1,10 @@
+[client]
+showErrorDetails = true
+
+[server]
+headless = true
+port = 8501
+runOnSave = false
+
+[logger]
+level = "info"
