@@ -2,6 +2,7 @@ from playwright.sync_api import sync_playwright
 import time
 import re
 from typing import Optional, Tuple
+import requests
 
 
 class InstagramProfile:
@@ -109,49 +110,43 @@ def fetch_instagram_user(username):
 def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], str]:
     """
     Fetch Instagram profile data for a given username.
+    Tries requests first (no deps), then Playwright if available.
     
     Args:
         username: Instagram username to fetch
         
     Returns:
         Tuple of (profile_object, method/error_message)
-        - profile_object: InstagramProfile instance or None if fetch failed
-        - method/error_message: Description of success method or error message
     """
-    # Try Playwright first
+    # Try requests-based fetch first (works on Streamlit Cloud)
     try:
         url = f"https://www.instagram.com/{username}/"
-        user_agent = (
-            "Mozilla/5.0 (X11; Linux x86_64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.set_extra_http_headers({"User-Agent": user_agent})
-
-            response = page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            if response is not None and response.status >= 400:
-                browser.close()
-                return None, f"Instagram returned HTTP {response.status}."
-
-            page.wait_for_timeout(3000)
-
-            # Meta description for counts
-            meta = page.locator('meta[name="description"]').get_attribute("content")
-
-            # Full HTML for bio
-            html = page.content()
-            bio = extract_bio_from_html(html)
-
-            browser.close()
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+        response = requests.get(url, headers=headers, timeout=15)
         
-        # Parse counts
-        followers_str, following_str, posts_str = parse_counts(meta)
+        if response.status_code == 404:
+            return None, "Username not found on Instagram."
+        if response.status_code >= 400:
+            raise Exception(f"HTTP {response.status_code}")
         
-        # Convert string counts to integers (remove commas)
+        html = response.text
+        
+        # Extract bio
+        bio = extract_bio_from_html(html)
+        if not bio:
+            bio = "(No bio)"
+        
+        # Try to parse counts from meta tag
+        meta = re.search(r'<meta name="description" content="([^"]*)"', html)
+        meta_content = meta.group(1) if meta else ""
+        followers_str, following_str, posts_str = parse_counts(meta_content)
+        
         def to_int(s: str) -> int:
             if s == "N/A":
                 return 0
@@ -160,48 +155,66 @@ def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], 
             except:
                 return 0
         
-        followers_count = to_int(followers_str)
-        following_count = to_int(following_str)
-        media_count = to_int(posts_str)
-        
-        if not bio:
-            bio = "(No bio)"
-        
         profile = InstagramProfile(
             username=username,
             bio=bio,
-            followers_count=followers_count,
-            following_count=following_count,
-            media_count=media_count,
-            has_profile_pic=1  # Assume has pic if page loads
+            followers_count=to_int(followers_str),
+            following_count=to_int(following_str),
+            media_count=to_int(posts_str),
+            has_profile_pic=1,
         )
+        return profile, "Web scraper (requests)"
         
-        return profile, "Playwright scraper"
-        
-    except Exception as playwright_error:
-        # Fallback: try public web scraping without Playwright (no auth needed)
+    except Exception as requests_error:
+        # Fallback to Playwright if available
         try:
             url = f"https://www.instagram.com/{username}/"
-            headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )
-            }
-            response = __import__("requests").get(url, headers=headers, timeout=10)
-            if response.status_code >= 400:
-                return None, "Unable to fetch from Instagram. Please enter details manually."
+            user_agent = (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.set_extra_http_headers({"User-Agent": user_agent})
+
+                response = page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                if response is not None and response.status >= 400:
+                    browser.close()
+                    return None, f"Instagram returned HTTP {response.status}."
+
+                page.wait_for_timeout(3000)
+
+                meta = page.locator('meta[name="description"]').get_attribute("content")
+                html = page.content()
+                bio = extract_bio_from_html(html)
+                browser.close()
             
-            html = response.text
-            bio = extract_bio_from_html(html)
-            meta_match = __import__("re").search(r'"edge_followed_by":{"edge_follow_list":{"count":(\d+)}}', html)
+            followers_str, following_str, posts_str = parse_counts(meta)
             
-            # Light fallback if we can't scrape properly
-            return None, "Unable to fetch from Instagram. Please enter details manually."
+            def to_int(s: str) -> int:
+                if s == "N/A":
+                    return 0
+                try:
+                    return int(s.replace(",", ""))
+                except:
+                    return 0
             
-        except Exception:
-            return None, "Unable to fetch from Instagram. Please enter details manually."
+            profile = InstagramProfile(
+                username=username,
+                bio=bio,
+                followers_count=to_int(followers_str),
+                following_count=to_int(following_str),
+                media_count=to_int(posts_str),
+                has_profile_pic=1,
+            )
+            return profile, "Playwright scraper"
+            
+        except Exception as playwright_error:
+            return None, "Unable to fetch from Instagram. Please enter account details manually."
+
 
 
 if __name__ == "__main__":
