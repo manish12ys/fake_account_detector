@@ -120,22 +120,31 @@ def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], 
     """
     try:
         url = f"https://www.instagram.com/{username}/"
-        
+        user_agent = (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            
-            # Set timeout and navigate
-            page.goto(url, timeout=60000)
-            page.wait_for_timeout(5000)
-            
+            page.set_extra_http_headers({"User-Agent": user_agent})
+
+            response = page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            if response is not None and response.status >= 400:
+                browser.close()
+                return None, f"Instagram returned HTTP {response.status}."
+
+            page.wait_for_timeout(3000)
+
             # Meta description for counts
             meta = page.locator('meta[name="description"]').get_attribute("content")
-            
+
             # Full HTML for bio
             html = page.content()
             bio = extract_bio_from_html(html)
-            
+
             browser.close()
         
         # Parse counts
@@ -169,7 +178,11 @@ def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], 
         return profile, "Playwright scraper"
         
     except Exception as e:
-        error_msg = f"Unable to fetch metrics from Instagram. Please enter details manually."
+        error_msg = (
+            "Unable to fetch metrics from Instagram. "
+            "Please enter details manually. "
+            f"Details: {e}"
+        )
         return None, error_msg
 
 
