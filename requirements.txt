@@ -12,4 +12,4 @@ selenium
 streamlit
 webdriver-manager
 altair<5
-
+playwright
