@@ -11,3 +11,5 @@ scikit-learn
 selenium
 streamlit
 webdriver-manager
+altair<5
+
