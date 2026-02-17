@@ -56,6 +56,25 @@ def init_state() -> None:
     st.session_state.setdefault("fetched_profile", None)
 
 
+def _get_instagram_auth_config() -> dict[str, str | None]:
+    login_user = None
+    login_pass = None
+    session_id = None
+
+    try:
+        login_user = st.secrets.get("INSTAGRAM_LOGIN")
+        login_pass = st.secrets.get("INSTAGRAM_PASSWORD")
+        session_id = st.secrets.get("INSTAGRAM_SESSIONID")
+    except Exception:
+        pass
+
+    return {
+        "login_user": login_user,
+        "login_pass": login_pass,
+        "session_id": session_id,
+    }
+
+
 st.set_page_config(page_title="Fake Account Detector", page_icon=":mag:", layout="wide")
 init_state()
 
@@ -80,7 +99,13 @@ with left:
                 st.warning("Please enter a username.")
             else:
                 with st.spinner("Fetching profile data..."):
-                    profile, error = fetch_instagram_profile(username_input.strip())
+                    auth = _get_instagram_auth_config()
+                    profile, error = fetch_instagram_profile(
+                        username_input.strip(),
+                        login_user=auth["login_user"],
+                        login_pass=auth["login_pass"],
+                        session_id=auth["session_id"],
+                    )
                 if profile is None:
                     st.error(error)
                 else:

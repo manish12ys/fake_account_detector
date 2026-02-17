@@ -1,9 +1,63 @@
 import json
 import os
 import re
+from pathlib import Path
 from typing import Optional, Tuple
 
 import requests
+
+
+def _load_local_streamlit_secrets() -> dict:
+    """Load local .streamlit/secrets.toml if available (for CLI runs)."""
+    try:
+        import tomllib
+    except Exception:
+        return {}
+
+    project_root = Path(__file__).resolve().parents[1]
+    secrets_path = project_root / ".streamlit" / "secrets.toml"
+    if not secrets_path.exists():
+        return {}
+
+    try:
+        return tomllib.loads(secrets_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _resolve_secret(key: str, provided_value: str | None = None) -> str:
+    if provided_value and str(provided_value).strip():
+        return str(provided_value).strip()
+
+    env_value = os.getenv(key, "").strip()
+    if env_value:
+        return env_value
+
+    secrets = _load_local_streamlit_secrets()
+    secret_value = secrets.get(key, "")
+    return str(secret_value).strip() if secret_value else ""
+
+
+def _build_requests_session(username: str | None = None, session_id: str | None = None) -> requests.Session:
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": f"https://www.instagram.com/{username or ''}",
+        }
+    )
+
+    session_id = _resolve_secret("INSTAGRAM_SESSIONID", session_id)
+    if session_id:
+        session.cookies.set("sessionid", session_id, domain=".instagram.com")
+        session.cookies.set("sessionid", session_id, domain="i.instagram.com")
+
+    return session
 
 
 class InstagramProfile:
@@ -153,19 +207,10 @@ def _parse_profile_from_html(username: str, html: str) -> Optional[InstagramProf
     )
 
 
-def _fetch_via_requests(username: str) -> Tuple[Optional[InstagramProfile], str]:
+def _fetch_via_requests(username: str, session_id: str | None = None) -> Tuple[Optional[InstagramProfile], str]:
     url = f"https://www.instagram.com/{username}/"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.instagram.com/",
-    }
-
-    response = requests.get(url, headers=headers, timeout=20)
+    session = _build_requests_session(username, session_id=session_id)
+    response = session.get(url, timeout=20)
     if response.status_code == 404:
         return None, "Username not found on Instagram."
     if response.status_code >= 400:
@@ -178,23 +223,20 @@ def _fetch_via_requests(username: str) -> Tuple[Optional[InstagramProfile], str]
     return profile, "Requests scraper"
 
 
-def _fetch_via_web_profile_api(username: str) -> Tuple[Optional[InstagramProfile], str]:
+def _fetch_via_web_profile_api(username: str, session_id: str | None = None) -> Tuple[Optional[InstagramProfile], str]:
     """Fetch profile using Instagram's web profile endpoint used by instagram.com."""
     url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/json",
-        "X-IG-App-ID": "936619743392459",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"https://www.instagram.com/{username}/",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    session = _build_requests_session(username, session_id=session_id)
+    session.headers.update(
+        {
+            "Accept": "application/json",
+            "X-IG-App-ID": "936619743392459",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"https://www.instagram.com/{username}/",
+        }
+    )
 
-    response = requests.get(url, headers=headers, timeout=20)
+    response = session.get(url, timeout=20)
     if response.status_code == 404:
         return None, "Username not found on Instagram."
     if response.status_code >= 400:
@@ -221,6 +263,80 @@ def _fetch_via_web_profile_api(username: str) -> Tuple[Optional[InstagramProfile
         has_profile_pic=1 if user.get("has_profile_pic_url") else 0,
     )
     return profile, "Instagram web API"
+
+
+def _fetch_via_legacy_json(username: str, session_id: str | None = None) -> Tuple[Optional[InstagramProfile], str]:
+    """Fallback endpoint that occasionally works when web_profile_info is rate limited."""
+    session = _build_requests_session(username, session_id=session_id)
+    session.headers.update({"X-IG-App-ID": "936619743392459"})
+    url = f"https://www.instagram.com/{username}/?__a=1&__d=dis"
+
+    response = session.get(url, timeout=20)
+    if response.status_code == 404:
+        return None, "Legacy JSON username not found."
+    if response.status_code >= 400:
+        return None, f"Legacy JSON returned HTTP {response.status_code}."
+
+    try:
+        payload = response.json()
+    except Exception:
+        return None, "Legacy JSON invalid payload."
+
+    user = payload.get("graphql", {}).get("user")
+    if not user:
+        return None, "Legacy JSON user payload missing."
+
+    return (
+        InstagramProfile(
+            username=str(user.get("username") or username),
+            bio=str(user.get("biography") or "(No bio)"),
+            followers_count=_to_int(user.get("edge_followed_by", {}).get("count", 0)),
+            following_count=_to_int(user.get("edge_follow", {}).get("count", 0)),
+            media_count=_to_int(user.get("edge_owner_to_timeline_media", {}).get("count", 0)),
+            has_profile_pic=1 if user.get("profile_pic_url_hd") or user.get("profile_pic_url") else 0,
+        ),
+        "Instagram legacy JSON",
+    )
+
+
+def _fetch_via_instagrapi(
+    username: str,
+    login_user: str | None = None,
+    login_pass: str | None = None,
+) -> Tuple[Optional[InstagramProfile], str]:
+    """Authenticated API fetch. Requires env: INSTAGRAM_LOGIN + INSTAGRAM_PASSWORD."""
+    login_user = _resolve_secret("INSTAGRAM_LOGIN", login_user)
+    login_pass = _resolve_secret("INSTAGRAM_PASSWORD", login_pass)
+    if not login_user or not login_pass:
+        return None, "Instagrapi credentials missing."
+
+    try:
+        from instagrapi import Client
+    except Exception:
+        return None, "Instagrapi unavailable."
+
+    try:
+        client = Client()
+        client.delay_range = [0, 1]
+        client.login(login_user, login_pass)
+        user_info = client.user_info_by_username(username)
+
+        return (
+            InstagramProfile(
+                username=str(user_info.username or username),
+                bio=str(user_info.biography or "(No bio)"),
+                followers_count=_to_int(user_info.follower_count),
+                following_count=_to_int(user_info.following_count),
+                media_count=_to_int(user_info.media_count),
+                has_profile_pic=1 if getattr(user_info, "profile_pic_url", None) else 0,
+            ),
+            "Instagrapi authenticated",
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "429" in message or "Please wait" in message:
+            return None, "Instagrapi rate-limited (429)."
+        return None, f"Instagrapi failed: {exc}"
 
 
 def _fetch_via_instaloader(username: str) -> Tuple[Optional[InstagramProfile], str]:
@@ -328,7 +444,13 @@ def fetch_instagram_user(username):
     }
 
 
-def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], str]:
+def fetch_instagram_profile(
+    username: str,
+    *,
+    login_user: str | None = None,
+    login_pass: str | None = None,
+    session_id: str | None = None,
+) -> Tuple[Optional[InstagramProfile], str]:
     """
     Fetch Instagram profile data for a given username.
     Tries requests first (no deps), then Playwright if available.
@@ -345,12 +467,16 @@ def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], 
 
     errors: list[str] = []
 
-    for fetcher in (
-        _fetch_via_web_profile_api,
-        _fetch_via_requests,
-        _fetch_via_playwright,
-        _fetch_via_instaloader,
-    ):
+    fetchers = (
+        lambda handle: _fetch_via_instagrapi(handle, login_user=login_user, login_pass=login_pass),
+        lambda handle: _fetch_via_web_profile_api(handle, session_id=session_id),
+        lambda handle: _fetch_via_legacy_json(handle, session_id=session_id),
+        lambda handle: _fetch_via_requests(handle, session_id=session_id),
+        lambda handle: _fetch_via_playwright(handle),
+        lambda handle: _fetch_via_instaloader(handle),
+    )
+
+    for fetcher in fetchers:
         profile, message = fetcher(cleaned_username)
         if profile is not None:
             return profile, message
