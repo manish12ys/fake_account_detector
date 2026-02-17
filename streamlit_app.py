@@ -202,7 +202,7 @@ with right:
             else:
                 st.metric("Similarity", "N/A")
 
-        st.divider()
+        st.markdown("---")
 
         verdict_left, verdict_right = st.columns(2)
         with verdict_left:
