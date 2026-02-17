@@ -177,6 +177,51 @@ def _fetch_via_requests(username: str) -> Tuple[Optional[InstagramProfile], str]
     return profile, "Requests scraper"
 
 
+def _fetch_via_web_profile_api(username: str) -> Tuple[Optional[InstagramProfile], str]:
+    """Fetch profile using Instagram's web profile endpoint used by instagram.com."""
+    url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+        "X-IG-App-ID": "936619743392459",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"https://www.instagram.com/{username}/",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    response = requests.get(url, headers=headers, timeout=20)
+    if response.status_code == 404:
+        return None, "Username not found on Instagram."
+    if response.status_code >= 400:
+        return None, f"Web API returned HTTP {response.status_code}."
+
+    try:
+        payload = response.json()
+    except Exception:
+        return None, "Web API returned invalid JSON."
+
+    user = payload.get("data", {}).get("user")
+    if not user:
+        status = payload.get("status")
+        if status == "fail":
+            return None, "Web API denied access for this profile."
+        return None, "Web API user payload missing."
+
+    profile = InstagramProfile(
+        username=str(user.get("username") or username),
+        bio=str(user.get("biography") or "(No bio)"),
+        followers_count=_to_int(user.get("edge_followed_by", {}).get("count", 0)),
+        following_count=_to_int(user.get("edge_follow", {}).get("count", 0)),
+        media_count=_to_int(user.get("edge_owner_to_timeline_media", {}).get("count", 0)),
+        has_profile_pic=1 if user.get("has_profile_pic_url") else 0,
+    )
+    return profile, "Instagram web API"
+
+
 def _fetch_via_instaloader(username: str) -> Tuple[Optional[InstagramProfile], str]:
     try:
         import instaloader
@@ -288,7 +333,12 @@ def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], 
 
     errors: list[str] = []
 
-    for fetcher in (_fetch_via_requests, _fetch_via_instaloader, _fetch_via_playwright):
+    for fetcher in (
+        _fetch_via_web_profile_api,
+        _fetch_via_requests,
+        _fetch_via_instaloader,
+        _fetch_via_playwright,
+    ):
         profile, message = fetcher(cleaned_username)
         if profile is not None:
             return profile, message
