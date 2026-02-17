@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from typing import Optional, Tuple
 
@@ -223,13 +224,21 @@ def _fetch_via_web_profile_api(username: str) -> Tuple[Optional[InstagramProfile
 
 
 def _fetch_via_instaloader(username: str) -> Tuple[Optional[InstagramProfile], str]:
+    if os.getenv("INSTAGRAM_ENABLE_INSTALOADER", "0") != "1":
+        return None, "Instaloader disabled."
+
     try:
         import instaloader
     except Exception:
         return None, "Instaloader unavailable."
 
     try:
-        loader = instaloader.Instaloader(download_pictures=False, download_videos=False)
+        loader = instaloader.Instaloader(
+            download_pictures=False,
+            download_videos=False,
+            max_connection_attempts=1,
+            request_timeout=8,
+        )
         profile = instaloader.Profile.from_username(loader.context, username)
         result = InstagramProfile(
             username=profile.username,
@@ -241,6 +250,9 @@ def _fetch_via_instaloader(username: str) -> Tuple[Optional[InstagramProfile], s
         )
         return result, "Instaloader"
     except Exception as exc:
+        message = str(exc)
+        if "429" in message or "Too Many Requests" in message:
+            return None, "Instaloader rate-limited (429)."
         return None, f"Instaloader failed: {exc}"
 
 
@@ -336,8 +348,8 @@ def fetch_instagram_profile(username: str) -> Tuple[Optional[InstagramProfile], 
     for fetcher in (
         _fetch_via_web_profile_api,
         _fetch_via_requests,
-        _fetch_via_instaloader,
         _fetch_via_playwright,
+        _fetch_via_instaloader,
     ):
         profile, message = fetcher(cleaned_username)
         if profile is not None:
